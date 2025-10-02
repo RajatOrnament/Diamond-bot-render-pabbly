@@ -7,7 +7,7 @@ const app = express();
 app.use(bodyParser.json());
 
 // Environment Variables in Render
-const PRIVATE_KEY = process.env.PRIVATE_KEY;         // RSA private key (PEM format)
+const PRIVATE_KEY = process.env.PRIVATE_KEY;         // Your RSA private key (PEM format)
 const PABBLY_WEBHOOK = process.env.PABBLY_WEBHOOK;   // Pabbly webhook URL
 
 // --- Utility: RSA-OAEP SHA256 decryption of AES key ---
@@ -16,7 +16,7 @@ function decryptAESKey(encrypted_aes_key) {
     {
       key: PRIVATE_KEY,
       padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-      oaepHash: "sha256"
+      oaepHash: "sha256"   // 🔑 enforce SHA-256 (required by WhatsApp Flows)
     },
     Buffer.from(encrypted_aes_key, "base64")
   );
@@ -28,7 +28,7 @@ function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   const encBuf = Buffer.from(encrypted_flow_data, "base64");
 
   try {
-    // AES-GCM
+    // AES-GCM (default used by WhatsApp)
     const tag = encBuf.slice(encBuf.length - 16);
     const ciphertext = encBuf.slice(0, encBuf.length - 16);
     const decipher = crypto.createDecipheriv(
@@ -40,7 +40,7 @@ function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   } catch (err) {
-    // AES-CBC fallback
+    // Fallback to AES-CBC (older payloads)
     const decipher = crypto.createDecipheriv(
       aesKey.length === 16 ? "aes-128-cbc" :
       aesKey.length === 24 ? "aes-192-cbc" : "aes-256-cbc",
@@ -65,7 +65,7 @@ app.post("/", (req, res) => {
     const aesKey = decryptAESKey(encrypted_aes_key);
     const plaintext = decryptFlowData(aesKey, initial_vector, encrypted_flow_data);
 
-    // ✅ Return the decrypted JSON string encoded once in Base64
+    // ✅ Return decrypted JSON string encoded once in Base64
     res.status(200).send(plaintext.toString("base64"));
   } catch (err) {
     res.status(500).send("Error: " + err.message);
