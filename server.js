@@ -6,44 +6,34 @@ import fetch from "node-fetch";
 const app = express();
 app.use(bodyParser.json());
 
-// Load secrets from Render env variables
-const PRIVATE_KEY = process.env.PRIVATE_KEY;         // RSA private key (PEM format)
+// Environment Variables in Render
+const PRIVATE_KEY = process.env.PRIVATE_KEY;         // Your RSA private key (PEM)
 const PABBLY_WEBHOOK = process.env.PABBLY_WEBHOOK;   // Pabbly webhook URL
 
-// Utility: RSA decrypt AES key
+// Utility: RSA-OAEP SHA256 decryption of AES key
 function decryptAESKey(encrypted_aes_key) {
-  try {
-    return crypto.privateDecrypt(
-      {
-        key: PRIVATE_KEY,
-        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-        oaepHash: "sha256"
-      },
-      Buffer.from(encrypted_aes_key, "base64")
-    );
-  } catch (err) {
-    // fallback SHA-1
-    return crypto.privateDecrypt(
-      {
-        key: PRIVATE_KEY,
-        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING
-      },
-      Buffer.from(encrypted_aes_key, "base64")
-    );
-  }
+  return crypto.privateDecrypt(
+    {
+      key: PRIVATE_KEY,
+      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: "sha256"
+    },
+    Buffer.from(encrypted_aes_key, "base64")
+  );
 }
 
-// Utility: AES decrypt data
+// Utility: AES decryption of Flow payload
 function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   const iv = Buffer.from(ivB64, "base64");
   const encBuf = Buffer.from(encrypted_flow_data, "base64");
 
   try {
-    // AES-GCM
+    // AES-GCM (preferred by Meta)
     const tag = encBuf.slice(encBuf.length - 16);
     const ciphertext = encBuf.slice(0, encBuf.length - 16);
     const decipher = crypto.createDecipheriv(
-      aesKey.length === 16 ? "aes-128-gcm" : aesKey.length === 24 ? "aes-192-gcm" : "aes-256-gcm",
+      aesKey.length === 16 ? "aes-128-gcm" :
+      aesKey.length === 24 ? "aes-192-gcm" : "aes-256-gcm",
       aesKey,
       iv
     );
@@ -52,7 +42,8 @@ function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   } catch (err) {
     // AES-CBC fallback
     const decipher = crypto.createDecipheriv(
-      aesKey.length === 16 ? "aes-128-cbc" : aesKey.length === 24 ? "aes-192-cbc" : "aes-256-cbc",
+      aesKey.length === 16 ? "aes-128-cbc" :
+      aesKey.length === 24 ? "aes-192-cbc" : "aes-256-cbc",
       aesKey,
       iv
     );
@@ -62,7 +53,7 @@ function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   }
 }
 
-// --- Health Check (Meta) ---
+// --- Meta Health Check ---
 app.post("/", (req, res) => {
   try {
     const { initial_vector, encrypted_flow_data, encrypted_aes_key } = req.body;
@@ -74,7 +65,7 @@ app.post("/", (req, res) => {
     const aesKey = decryptAESKey(encrypted_aes_key);
     const plaintext = decryptFlowData(aesKey, initial_vector, encrypted_flow_data);
 
-    // Meta expects Base64 encoded response body
+    // Respond with decrypted result Base64 encoded
     const responseBase64 = Buffer.from(plaintext.toString("utf8")).toString("base64");
     res.status(200).send(responseBase64);
   } catch (err) {
@@ -82,7 +73,7 @@ app.post("/", (req, res) => {
   }
 });
 
-// --- Real Flow Webhook ---
+// --- Flow Webhook (real data) ---
 app.post("/webhook", async (req, res) => {
   try {
     const { initial_vector, encrypted_flow_data, encrypted_aes_key } = req.body;
@@ -120,6 +111,6 @@ app.post("/webhook", async (req, res) => {
 // --- Service Check ---
 app.get("/", (req, res) => res.send("WhatsApp Flow Decryption Service is running"));
 
-// --- Start Server ---
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
