@@ -7,17 +7,18 @@ const app = express();
 app.use(bodyParser.json());
 
 // Load secrets from Render env variables
-const PRIVATE_KEY = process.env.PRIVATE_KEY;         // RSA private key (PEM format, including -----BEGIN PRIVATE KEY-----)
+const PRIVATE_KEY = process.env.PRIVATE_KEY;         // RSA private key (PEM format)
 const PABBLY_WEBHOOK = process.env.PABBLY_WEBHOOK;   // Pabbly webhook URL
 
-// --- Health Check Endpoints ---
+// --- Health Check ---
 app.get("/", (req, res) => {
   res.send("WhatsApp Flow Decryption Service is running");
 });
 
-// Meta runs health check with POST /, so respond 200 OK
+// Meta requires POST / healthcheck response to be Base64-encoded
 app.post("/", (req, res) => {
-  res.status(200).json({ status: "ok" });
+  // "ok" in Base64 is "b2s="
+  res.status(200).send("b2s=");
 });
 
 // --- Webhook Decryption ---
@@ -29,7 +30,7 @@ app.post("/webhook", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // 1. Decrypt AES key (RSA OAEP SHA-256, fallback SHA-1)
+    // 1. Decrypt AES key (RSA-OAEP SHA-256, fallback SHA-1)
     let aesKey;
     try {
       aesKey = crypto.privateDecrypt(
@@ -44,19 +45,19 @@ app.post("/webhook", async (req, res) => {
       aesKey = crypto.privateDecrypt(
         {
           key: PRIVATE_KEY,
-          padding: crypto.constants.RSA_PKCS1_OAEP_PADDING // default OAEP-SHA1
+          padding: crypto.constants.RSA_PKCS1_OAEP_PADDING // fallback SHA-1
         },
         Buffer.from(encrypted_aes_key, "base64")
       );
     }
 
-    // 2. Decrypt Flow data (AES-GCM first, fallback to AES-CBC)
+    // 2. Decrypt Flow data (AES-GCM first, fallback AES-CBC)
     const iv = Buffer.from(initial_vector, "base64");
     const encBuf = Buffer.from(encrypted_flow_data, "base64");
     let plaintext;
 
     try {
-      // AES-GCM: ciphertext || 16-byte tag
+      // AES-GCM mode
       const tag = encBuf.slice(encBuf.length - 16);
       const ciphertext = encBuf.slice(0, encBuf.length - 16);
       const decipher = crypto.createDecipheriv(
@@ -67,7 +68,7 @@ app.post("/webhook", async (req, res) => {
       decipher.setAuthTag(tag);
       plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     } catch (err) {
-      // Fallback AES-CBC + PKCS#7
+      // AES-CBC fallback
       const decipher = crypto.createDecipheriv(
         aesKey.length === 16 ? "aes-128-cbc" : aesKey.length === 24 ? "aes-192-cbc" : "aes-256-cbc",
         aesKey,
@@ -88,7 +89,7 @@ app.post("/webhook", async (req, res) => {
       });
     }
 
-    // 3. Forward decrypted JSON to Pabbly
+    // 3. Forward decrypted JSON to Pabbly webhook
     await fetch(PABBLY_WEBHOOK, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
