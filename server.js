@@ -7,10 +7,10 @@ const app = express();
 app.use(bodyParser.json());
 
 // Environment Variables in Render
-const PRIVATE_KEY = process.env.PRIVATE_KEY;         // Your RSA private key (PEM)
+const PRIVATE_KEY = process.env.PRIVATE_KEY;         // RSA private key (PEM format)
 const PABBLY_WEBHOOK = process.env.PABBLY_WEBHOOK;   // Pabbly webhook URL
 
-// Utility: RSA-OAEP SHA256 decryption of AES key
+// --- Utility: RSA-OAEP SHA256 decryption of AES key ---
 function decryptAESKey(encrypted_aes_key) {
   return crypto.privateDecrypt(
     {
@@ -22,13 +22,13 @@ function decryptAESKey(encrypted_aes_key) {
   );
 }
 
-// Utility: AES decryption of Flow payload
+// --- Utility: AES decryption of Flow payload ---
 function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   const iv = Buffer.from(ivB64, "base64");
   const encBuf = Buffer.from(encrypted_flow_data, "base64");
 
   try {
-    // AES-GCM (preferred by Meta)
+    // AES-GCM
     const tag = encBuf.slice(encBuf.length - 16);
     const ciphertext = encBuf.slice(0, encBuf.length - 16);
     const decipher = crypto.createDecipheriv(
@@ -53,7 +53,7 @@ function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   }
 }
 
-// --- Meta Health Check ---
+// --- Health Check (Meta expects decrypted payload in Base64) ---
 app.post("/", (req, res) => {
   try {
     const { initial_vector, encrypted_flow_data, encrypted_aes_key } = req.body;
@@ -65,15 +65,14 @@ app.post("/", (req, res) => {
     const aesKey = decryptAESKey(encrypted_aes_key);
     const plaintext = decryptFlowData(aesKey, initial_vector, encrypted_flow_data);
 
-    // Respond with decrypted result Base64 encoded
-    const responseBase64 = Buffer.from(plaintext.toString("utf8")).toString("base64");
-    res.status(200).send(responseBase64);
+    // ✅ Return the decrypted JSON string encoded once in Base64
+    res.status(200).send(plaintext.toString("base64"));
   } catch (err) {
     res.status(500).send("Error: " + err.message);
   }
 });
 
-// --- Flow Webhook (real data) ---
+// --- Flow Webhook (real data -> forward to Pabbly) ---
 app.post("/webhook", async (req, res) => {
   try {
     const { initial_vector, encrypted_flow_data, encrypted_aes_key } = req.body;
@@ -108,9 +107,9 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// --- Service Check ---
+// --- Service Check (Render test) ---
 app.get("/", (req, res) => res.send("WhatsApp Flow Decryption Service is running"));
 
-// Start server
+// --- Start server ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
