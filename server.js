@@ -5,7 +5,7 @@ import fetch from "node-fetch";
 
 const app = express();
 
-// Middleware: parse both JSON and urlencoded bodies
+// Middleware: parse JSON + form bodies
 app.use(bodyParser.json({ limit: "5mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "5mb" }));
 
@@ -13,19 +13,7 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "5mb" }));
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const PABBLY_WEBHOOK = process.env.PABBLY_WEBHOOK;
 
-// --- Utility: RSA-OAEP SHA256 decryption of AES key ---
-function decryptAESKey(encrypted_aes_key) {
-  return crypto.privateDecrypt(
-    {
-      key: PRIVATE_KEY,
-      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-      oaepHash: "sha256"
-    },
-    Buffer.from(encrypted_aes_key, "base64")
-  );
-}
-
-// --- Utility: AES decryption ---
+// --- Utility: AES decrypt ---
 function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   const iv = Buffer.from(ivB64, "base64");
   const encBuf = Buffer.from(encrypted_flow_data, "base64");
@@ -56,24 +44,58 @@ function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   }
 }
 
-// --- Webhook (for Pabbly → Render) ---
+// --- Health Check (Meta will POST /) ---
+app.post("/", (req, res) => {
+  try {
+    const { initial_vector, encrypted_flow_data, encrypted_aes_key } = req.body;
+
+    if (!initial_vector || !encrypted_flow_data || !encrypted_aes_key) {
+      return res.status(400).send("Missing fields");
+    }
+
+    // Decrypt AES key using RSA-OAEP SHA256
+    const aesKey = crypto.privateDecrypt(
+      {
+        key: PRIVATE_KEY,
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: "sha256"
+      },
+      Buffer.from(encrypted_aes_key, "base64")
+    );
+
+    // Decrypt flow data
+    const plaintext = decryptFlowData(aesKey, initial_vector, encrypted_flow_data);
+
+    // ✅ Respond with ONLY base64 of the plaintext JSON
+    const base64Response = Buffer.from(plaintext.toString("utf8")).toString("base64");
+    res.status(200).send(base64Response);
+
+  } catch (err) {
+    console.error("Health check error:", err.message);
+    res.status(500).send("Error: " + err.message);
+  }
+});
+
+// --- Real Flow submissions (decrypted & forwarded) ---
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("BODY RECEIVED:", req.body); // Debug log
-
-    // Support both JSON body and form-urlencoded
-    const initial_vector =
-      req.body.initial_vector || req.body["initial_vector"];
-    const encrypted_flow_data =
-      req.body.encrypted_flow_data || req.body["encrypted_flow_data"];
-    const encrypted_aes_key =
-      req.body.encrypted_aes_key || req.body["encrypted_aes_key"];
+    const { initial_vector, encrypted_flow_data, encrypted_aes_key } = req.body;
 
     if (!initial_vector || !encrypted_flow_data || !encrypted_aes_key) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const aesKey = decryptAESKey(encrypted_aes_key);
+    // Decrypt AES key
+    const aesKey = crypto.privateDecrypt(
+      {
+        key: PRIVATE_KEY,
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: "sha256"
+      },
+      Buffer.from(encrypted_aes_key, "base64")
+    );
+
+    // Decrypt Flow data
     const plaintext = decryptFlowData(aesKey, initial_vector, encrypted_flow_data);
 
     let data;
@@ -86,7 +108,7 @@ app.post("/webhook", async (req, res) => {
       });
     }
 
-    // Forward to Pabbly webhook (optional)
+    // Forward decrypted JSON to Pabbly webhook (if configured)
     if (PABBLY_WEBHOOK) {
       await fetch(PABBLY_WEBHOOK, {
         method: "POST",
@@ -97,12 +119,12 @@ app.post("/webhook", async (req, res) => {
 
     res.json({ status: "ok", data });
   } catch (err) {
-    console.error("Decrypt error:", err.message);
+    console.error("Webhook error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Health check route
+// --- Service check ---
 app.get("/", (req, res) => res.send("✅ WhatsApp Flow Decryption Service is running"));
 
 const PORT = process.env.PORT || 3000;
