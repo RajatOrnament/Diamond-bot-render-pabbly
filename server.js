@@ -9,7 +9,7 @@ app.use(bodyParser.json({ limit: "5mb" }));
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const PABBLY_WEBHOOK = process.env.PABBLY_WEBHOOK;
 
-// --- Utility: AES decryption ---
+// --- Utility: AES decrypt ---
 function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
   const iv = Buffer.from(ivB64, "base64");
   const encBuf = Buffer.from(encrypted_flow_data, "base64");
@@ -44,6 +44,7 @@ function decryptFlowData(aesKey, ivB64, encrypted_flow_data) {
 app.post("/", (req, res) => {
   try {
     const { initial_vector, encrypted_flow_data, encrypted_aes_key } = req.body;
+
     if (!initial_vector || !encrypted_flow_data || !encrypted_aes_key) {
       return res.status(400).send("Missing fields");
     }
@@ -60,14 +61,17 @@ app.post("/", (req, res) => {
 
     // Decrypt flow data
     const plaintext = decryptFlowData(aesKey, initial_vector, encrypted_flow_data);
+    const decryptedJson = plaintext.toString("utf8");
+    const base64Response = Buffer.from(decryptedJson).toString("base64").trim();
 
-    // Log for debugging
-    console.log("✅ Health Check Decrypted JSON:", plaintext.toString("utf8"));
+    console.log("✅ Health Check Decrypted JSON:", decryptedJson);
+    console.log("✅ Health Check Base64 Response:", base64Response);
 
-    // Respond with only Base64 string
-    const base64Response = Buffer.from(plaintext).toString("base64");
-    res.set("Content-Type", "text/plain");
-    res.status(200).send(base64Response);
+    // Send plain Base64 with no formatting issues
+    res.set("Content-Type", "text/plain; charset=utf-8");
+    res.set("Content-Length", Buffer.byteLength(base64Response, "utf8"));
+    res.status(200);
+    res.end(base64Response);
 
   } catch (err) {
     console.error("❌ Health check error:", err.message);
